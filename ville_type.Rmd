@@ -22,7 +22,7 @@ library(leaflet)
 library(viridis)
 library(htmlwidgets)
 library(readr)
-
+require(scales)
 #devtools::install_github("dkahle/ggmap") # nécessite la version de développement 2.7 pour pouvoir utiliser une api key.
 library(ggmap)
 library(stringr)
@@ -44,7 +44,7 @@ set_config( config( ssl_verifypeer = 0L ) )
 
 
 ville <- "province"
-type <- "piétons"   # vélos
+type <- "piétons"   # vélos , piétons
 
 download_files <- FALSE
 read_from_csv <- FALSE
@@ -127,7 +127,42 @@ accidents <- bind_rows(accidents11,accidents12, accidents13,
   mutate(gravite = as.factor(gravite) %>% fct_relevel("Dommages matériels seulement", "Léger", "Grave", "Mortel"))  %>% 
    mutate(heure = as.numeric(ifelse(heure_accdn == "Non précisé", NA, str_sub(heure_accdn,1,2) )),
           region_num = as.numeric(str_sub(REG_ADM, -3, -2))) %>%
-    mutate(row_num = row_number()) 
+    mutate(row_num = row_number())  %>%
+    mutate(CD_ENVRN_ACCDN = fct_recode(as.factor(CD_ENVRN_ACCDN) ,
+         "Scolaire"= "1", 
+         "Résidentiel" = "2", 
+         "Affaires / commercial"= "3",
+         "Industriel / Manufacturier" = "4",
+         "Rural" = "5",
+         "Forestier" = "6", 
+         "Récréatif / parc / camping" = "7",
+         "Autre"    = "9",
+         "Non précisé" = "0")) %>%
+  mutate(CD_COND_METEO =
+   fct_recode(as.factor(CD_COND_METEO),
+              "Clair" = "11",
+              "Couvert (nuageux/sombre)" = "12",
+              "Brouillard/brume "= "13",
+              "Pluie/bruine"= "14",
+              "Averse (pluie forte)" = "15",
+              "Vent fort (pas de poudrerie, pas de pluie)"= "16",
+              "Neige/grêle"= "17",
+              "Poudrerie/tempête de neige"= "18",
+              "Verglas"= "19",
+              "Autre" = "99")) %>%
+  mutate(CD_POSI_ACCDN = 
+           fct_recode(as.factor(CD_POSI_ACCDN),
+                      "Voie réservée en service"= "01",
+                      "Voie lente/voie de dépassement" = "02",
+                      "Perte/gain de voie"= "03", 
+                      "Voie de virage à gauche dans les deux sens"= "04",
+                      "Voie cyclable/chaussée désignée"= "05",
+                      "Voie de circulation "= "06",
+                      "Accotement (ou bord de la chaussée)"= "07",
+                      "Terre-plein central ou îlot"= "08",
+                      "Trottoir"= "09",
+                      "Autre" = "10"))
+  
 
  save(accidents, accidents16, file= "accidents.rdata")
 } else load("accidents.rdata")
@@ -142,6 +177,8 @@ if (type == "piétons"){
 } else if (type == "vélos"){
   accidents <- accidents %>% filter(nb_bicyclette > 0) 
 } else {stop("type doit être piétons ou vélos")}
+
+
 
 accidents$RUE_ACCDNmod <- accidents$RUE_ACCDN
 accidents$ACCDN_PRES_DEmod <- accidents$ACCDN_PRES_DE
@@ -386,7 +423,25 @@ Le reste de l'analyse portera sur les `r velo %>% tally()` accidents qui ont ét
 
 accidents %>% ggplot(aes(x=year))+ geom_histogram(binwidth = 1)+ 
   ggtitle(wrapper(paste0("Accidents impliquant des ", type, " dans la ", villetexte, " entre 2011 et 2016"),
-          width = 70))
+                  width = 70))+ 
+  theme_bw()
+```
+
+<!-- ## selon la semaine avant/après recul de l'heure -->
+
+```{r}
+
+# recule_heure <- seq(ymd("2011-01-01"),ymd("2017-12-31"),by="1 day") %>% tbl_df() %>% 
+#   filter (wday(value, label = TRUE) == "Sun", day(value) <= 7, month (value)== 11)%>% 
+#   mutate(dummy=TRUE)
+# 
+# 
+# accidents %>% mutate(dummy = TRUE) %>%
+#   left_join(recule_heure) %>%
+#   filter(DT_ACCDN >= value-7, DT_ACCDN< value+7) %>%
+#   mutate(apres = ifelse(DT_ACCDN< value, 0, 1)) %>%
+#   count(year,apres)
+#   ca ne marche pas vraiment
 ```
 
 
@@ -394,16 +449,70 @@ accidents %>% ggplot(aes(x=year))+ geom_histogram(binwidth = 1)+
 ```{r evol_mois}
 ggplot(accidents,aes(x = month.abb)) + 
     geom_histogram(binwidth=1, stat="count")+ 
-  ggtitle(wrapper(paste0("Accidents impliquant des ", type, " dans la ", villetexte, " selon le mois de l'accident entre 2011 et 2016"),
-                  width=70))
+  ggtitle(wrapper(paste0("Accidents impliquant des ", type, " dans la ", villetexte, " selon le mois de l'accident"),
+                  width=70))+
+  facet_wrap(~ year)+
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+## Selon l'environnement  
+
+```{r CD_ENVRN_ACCDN}
+accidents %>% 
+  mutate(CD_ENVRN_ACCDN = CD_ENVRN_ACCDN %>% fct_infreq() )%>%
+ggplot()+
+  geom_bar(mapping = aes(x=CD_ENVRN_ACCDN))+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1))+
+   scale_y_continuous(labels = comma)
+```
+
+## Selon les conditions météos  
+
+```{r CD_COND_METEO}
+
+accidents %>% 
+  mutate(CD_COND_METEO = CD_COND_METEO %>% fct_infreq() )%>%
+ggplot()+
+  geom_bar(mapping = aes(x=CD_COND_METEO))+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1))+
+   scale_y_continuous(labels = comma)
+```
+
+## Selon la localisation transversale  
+
+```{r CD_POSI_ACCDN}
+accidents %>% 
+  mutate(CD_POSI_ACCDN = CD_POSI_ACCDN %>% fct_infreq() )%>%
+ggplot()+
+  geom_bar(mapping = aes(x=CD_POSI_ACCDN))+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1))+
+   scale_y_continuous(labels = comma)
+```
+
+## Selon la semaine de l'année
+```{r evol_semaine}
+ggplot(accidents,aes(x = week)) + 
+    geom_histogram(binwidth=1, stat="count")+ 
+  ggtitle(wrapper(paste0("Accidents impliquant des ", type, " dans la ", villetexte, " selon la semaine de l'accident"),
+                  width=70)) +
+  facet_wrap(~ year)+
+  theme_bw()
 ```
 
 ## Selon l'heure de la journée
 ```{r evol_heure}
 ggplot(accidents,aes(x = heure)) + 
     geom_bar()+ 
-  ggtitle(wrapper(paste0("Accidents impliquant des ", type, " dans la ", villetexte, " selon l'heure de l'accident entre 2011 et 2016"), width=70))
+  ggtitle(wrapper(paste0("Accidents impliquant des ", type, " dans la ", villetexte, " selon l'heure de l'accident"), width=70))+
+  facet_wrap(~ year)+ 
+  theme_bw()
 ```
+
+```{r}
+accidents %>% count(CD_POSI_ACCDN)
+```
+
 
 ## Selon la région administrative
 ```{r evol_regadm}
@@ -432,7 +541,7 @@ datatable(data =  accidents %>%
             inner_join(liste) %>% 
             count(rang, NAME_MUNCP,year) %>%
             spread(key=year, value=n) %>%
-            rename(Municipalité = NAME_MUNCP),
+            rename(`Municipalité` = NAME_MUNCP),
             
           rownames = F,
           options = list(dom = 't', ordering = F, pageLength=10) ,          
@@ -446,6 +555,7 @@ ggplot(accidents,aes(x = year, fill= gravite)) +
     geom_bar(position = "fill")+ 
   ggtitle(wrapper(paste0("Répartition des accidents (géolocalisés ou non) impliquant un ", type, " dans la ", villetexte, " selon la gravité de l'accident entre 2011 et 2016"), width=70))
 ```
+
 
 
 ## Liste des accidents mortels
