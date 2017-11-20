@@ -793,6 +793,11 @@ z <-   zz %>%
             values = ~ traffic_78,
             title = paste0("Trafic total pour juillet-aout 2016, 18 stations"))
 
+## données mtl trajet
+# http://donnees.ville.montreal.qc.ca/dataset/mtl-trajet
+#http://depot.ville.montreal.qc.ca/mtl-trajet-2016/trip_final_2016_shp.zip
+#http://depot.ville.montreal.qc.ca/mtl-trajet-2016/qa_segment_ref_with_count_2016_shp.zip
+
 
 ```
 
