@@ -22,7 +22,7 @@ library(leaflet)
 library(viridis)
 library(htmlwidgets)
 library(readr)
-
+require(scales)
 #devtools::install_github("dkahle/ggmap") # nécessite la version de développement 2.7 pour pouvoir utiliser une api key.
 library(ggmap)
 library(stringr)
@@ -44,7 +44,7 @@ set_config( config( ssl_verifypeer = 0L ) )
 
 
 ville <- "province"
-type <- "piétons"   # vélos
+type <- "vélos"   # vélos , piétons
 
 download_files <- FALSE
 read_from_csv <- FALSE
@@ -84,6 +84,21 @@ if(download_files){
 # manually created a .tsv from the table found here
 #(https://www.mamrot.gouv.qc.ca/recherche-avancee/fiche/municipalite/).
 download.file("https://raw.githubusercontent.com/SimonCoulombe/saaqmtq/master/data/code_to_mun.tsv", destfile= "./data/code_to_mun.tsv")
+
+# comptage
+download.file("http://donnees.ville.montreal.qc.ca/dataset/f170fecc-18db-44bc-b4fe-5b0b6d2c7297/resource/6caecdd0-e5ac-48c1-a0cc-5b537936d5f6/download/comptagevelo20162.csv",
+              destfile="./data/comptagevelo20162.csv")
+
+#localisatio ncomptage
+
+download.file("http://donnees.ville.montreal.qc.ca/dataset/f170fecc-18db-44bc-b4fe-5b0b6d2c7297/resource/c7d0546a-a218-479e-bc9f-ce8f13ca972c/download/localisationcompteursvelo2015.csv", 
+              destfile="./data/localisationcompteursvelo2015.csv")
+
+#shapefile
+download.file("http://donnees.ville.montreal.qc.ca/dataset/5ea29f40-1b5b-4f34-85b3-7c67088ff536/resource/234c8ee4-d9d8-4bb1-b957-3e5cd495a5aa/download/reseaucyclable2017juin2017shp.zip",
+              destfile = "./data/reseaucyclable2017juin2017shp.zip")
+utils::unzip("./data/reseaucyclable2017juin2017shp.zip", 
+             exdir = "./data")
 }
 ```
 
@@ -97,6 +112,8 @@ Le programme qui a servi à générer ce document est situé au https://raw.gith
 ```{r accidents}
 
 if (read_from_csv){
+  
+
 accidents16 <- read_csv("./data/rapports-accident-2016.csv") %>%
   mutate(NO_ROUTE = as.numeric(NO_ROUTE), SFX_NO_CIVIQ_ACCDN= as.character(SFX_NO_CIVIQ_ACCDN))
 accidents15 <- read_csv("./data/rapports-accident-2015.csv")%>%
@@ -127,7 +144,42 @@ accidents <- bind_rows(accidents11,accidents12, accidents13,
   mutate(gravite = as.factor(gravite) %>% fct_relevel("Dommages matériels seulement", "Léger", "Grave", "Mortel"))  %>% 
    mutate(heure = as.numeric(ifelse(heure_accdn == "Non précisé", NA, str_sub(heure_accdn,1,2) )),
           region_num = as.numeric(str_sub(REG_ADM, -3, -2))) %>%
-    mutate(row_num = row_number()) 
+    mutate(row_num = row_number())  %>%
+    mutate(CD_ENVRN_ACCDN = fct_recode(as.factor(CD_ENVRN_ACCDN) ,
+         "Scolaire"= "1", 
+         "Résidentiel" = "2", 
+         "Affaires / commercial"= "3",
+         "Industriel / Manufacturier" = "4",
+         "Rural" = "5",
+         "Forestier" = "6", 
+         "Récréatif / parc / camping" = "7",
+         "Autre"    = "9",
+         "Non précisé" = "0")) %>%
+  mutate(CD_COND_METEO =
+   fct_recode(as.factor(CD_COND_METEO),
+              "Clair" = "11",
+              "Couvert (nuageux/sombre)" = "12",
+              "Brouillard/brume "= "13",
+              "Pluie/bruine"= "14",
+              "Averse (pluie forte)" = "15",
+              "Vent fort (pas de poudrerie, pas de pluie)"= "16",
+              "Neige/grêle"= "17",
+              "Poudrerie/tempête de neige"= "18",
+              "Verglas"= "19",
+              "Autre" = "99")) %>%
+  mutate(CD_POSI_ACCDN = 
+           fct_recode(as.factor(CD_POSI_ACCDN),
+                      "Voie réservée en service"= "01",
+                      "Voie lente/voie de dépassement" = "02",
+                      "Perte/gain de voie"= "03", 
+                      "Voie de virage à gauche dans les deux sens"= "04",
+                      "Voie cyclable/chaussée désignée"= "05",
+                      "Voie de circulation "= "06",
+                      "Accotement (ou bord de la chaussée)"= "07",
+                      "Terre-plein central ou îlot"= "08",
+                      "Trottoir"= "09",
+                      "Autre" = "10"))
+  
 
  save(accidents, accidents16, file= "accidents.rdata")
 } else load("accidents.rdata")
@@ -142,6 +194,8 @@ if (type == "piétons"){
 } else if (type == "vélos"){
   accidents <- accidents %>% filter(nb_bicyclette > 0) 
 } else {stop("type doit être piétons ou vélos")}
+
+
 
 accidents$RUE_ACCDNmod <- accidents$RUE_ACCDN
 accidents$ACCDN_PRES_DEmod <- accidents$ACCDN_PRES_DE
@@ -386,7 +440,25 @@ Le reste de l'analyse portera sur les `r velo %>% tally()` accidents qui ont ét
 
 accidents %>% ggplot(aes(x=year))+ geom_histogram(binwidth = 1)+ 
   ggtitle(wrapper(paste0("Accidents impliquant des ", type, " dans la ", villetexte, " entre 2011 et 2016"),
-          width = 70))
+                  width = 70))+ 
+  theme_bw()
+```
+
+<!-- ## selon la semaine avant/après recul de l'heure -->
+
+```{r}
+
+# recule_heure <- seq(ymd("2011-01-01"),ymd("2017-12-31"),by="1 day") %>% tbl_df() %>% 
+#   filter (wday(value, label = TRUE) == "Sun", day(value) <= 7, month (value)== 11)%>% 
+#   mutate(dummy=TRUE)
+# 
+# 
+# accidents %>% mutate(dummy = TRUE) %>%
+#   left_join(recule_heure) %>%
+#   filter(DT_ACCDN >= value-7, DT_ACCDN< value+7) %>%
+#   mutate(apres = ifelse(DT_ACCDN< value, 0, 1)) %>%
+#   count(year,apres)
+#   ca ne marche pas vraiment
 ```
 
 
@@ -394,16 +466,70 @@ accidents %>% ggplot(aes(x=year))+ geom_histogram(binwidth = 1)+
 ```{r evol_mois}
 ggplot(accidents,aes(x = month.abb)) + 
     geom_histogram(binwidth=1, stat="count")+ 
-  ggtitle(wrapper(paste0("Accidents impliquant des ", type, " dans la ", villetexte, " selon le mois de l'accident entre 2011 et 2016"),
-                  width=70))
+  ggtitle(wrapper(paste0("Accidents impliquant des ", type, " dans la ", villetexte, " selon le mois de l'accident"),
+                  width=70))+
+  facet_wrap(~ year)+
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+## Selon l'environnement  
+
+```{r CD_ENVRN_ACCDN}
+accidents %>% 
+  mutate(CD_ENVRN_ACCDN = CD_ENVRN_ACCDN %>% fct_infreq() )%>%
+ggplot()+
+  geom_bar(mapping = aes(x=CD_ENVRN_ACCDN))+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1))+
+   scale_y_continuous(labels = comma)
+```
+
+## Selon les conditions météos  
+
+```{r CD_COND_METEO}
+
+accidents %>% 
+  mutate(CD_COND_METEO = CD_COND_METEO %>% fct_infreq() )%>%
+ggplot()+
+  geom_bar(mapping = aes(x=CD_COND_METEO))+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1))+
+   scale_y_continuous(labels = comma)
+```
+
+## Selon la localisation transversale  
+
+```{r CD_POSI_ACCDN}
+accidents %>% 
+  mutate(CD_POSI_ACCDN = CD_POSI_ACCDN %>% fct_infreq() )%>%
+ggplot()+
+  geom_bar(mapping = aes(x=CD_POSI_ACCDN))+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1))+
+   scale_y_continuous(labels = comma)
+```
+
+## Selon la semaine de l'année
+```{r evol_semaine}
+ggplot(accidents,aes(x = week)) + 
+    geom_histogram(binwidth=1, stat="count")+ 
+  ggtitle(wrapper(paste0("Accidents impliquant des ", type, " dans la ", villetexte, " selon la semaine de l'accident"),
+                  width=70)) +
+  facet_wrap(~ year)+
+  theme_bw()
 ```
 
 ## Selon l'heure de la journée
 ```{r evol_heure}
 ggplot(accidents,aes(x = heure)) + 
     geom_bar()+ 
-  ggtitle(wrapper(paste0("Accidents impliquant des ", type, " dans la ", villetexte, " selon l'heure de l'accident entre 2011 et 2016"), width=70))
+  ggtitle(wrapper(paste0("Accidents impliquant des ", type, " dans la ", villetexte, " selon l'heure de l'accident"), width=70))+
+  facet_wrap(~ year)+ 
+  theme_bw()
 ```
+
+```{r}
+accidents %>% count(CD_POSI_ACCDN)
+```
+
 
 ## Selon la région administrative
 ```{r evol_regadm}
@@ -432,7 +558,7 @@ datatable(data =  accidents %>%
             inner_join(liste) %>% 
             count(rang, NAME_MUNCP,year) %>%
             spread(key=year, value=n) %>%
-            rename(Municipalité = NAME_MUNCP),
+            rename(`Municipalité` = NAME_MUNCP),
             
           rownames = F,
           options = list(dom = 't', ordering = F, pageLength=10) ,          
@@ -446,6 +572,7 @@ ggplot(accidents,aes(x = year, fill= gravite)) +
     geom_bar(position = "fill")+ 
   ggtitle(wrapper(paste0("Répartition des accidents (géolocalisés ou non) impliquant un ", type, " dans la ", villetexte, " selon la gravité de l'accident entre 2011 et 2016"), width=70))
 ```
+
 
 
 ## Liste des accidents mortels
@@ -582,6 +709,71 @@ map_data %>% leaflet(options = leafletOptions(maxZoom = 17)) %>%
   addMarkers(clusterOptions =
                markerClusterOptions(spiderfyOnMaxZoom= TRUE),
              label = ~ paste0(gravite,"  ", DT_ACCDN, "  ", location) )  
+
+```
+
+```{r carte_piste}
+  comptage <- read_csv("./data/comptagevelo20162.csv",  locale = locale(encoding = "UTF8"))
+  localisation <- read_csv("./data/localisationcompteursvelo2015.csv" ,  locale = locale(encoding = "ISO-8859-1"))
+  shp <- st_read("./data/Reseau_cyclable_2017_juin2017.shp")%>% st_transform(., "+proj=longlat +datum=WGS84") %>%  st_zm()
+  
+  #Error in if (length(nms) != n || any(nms == "")) stop("'options' must be a fully named list, or have no names (NULL)") : 
+  #missing value where TRUE/FALSE needed 
+  # on règle cette erreur avec st_zm()
+z <-   shp %>% 
+  leaflet() %>% 
+  addPolylines(highlightOptions = highlightOptions(color = "white", 
+                                                   weight = 2,
+                                                   bringToFront = TRUE),
+               label = ~ NOM_ARR_VI) %>% 
+  addProviderTiles(providers$Esri.WorldTopoMap) %>%
+  addMarkers(data= localisation, ~coord_X, ~coord_Y)
+   
+z
+```
+
+```{r}
+# find nearest line from points.  pour trouver quel segment de piste cyclable correspond à chaque compteur.
+#https://gis.stackexchange.com/questions/243994/how-to-calculate-distance-from-point-to-linestring-in-r-using-sf-library-and-g
+
+localisation2 <-  st_as_sf(localisation  , 
+                      coords = c("coord_X", "coord_Y"), 
+                      crs = 4326, agr = "constant") 
+
+pointsWgs84.sf <- st_transform(localisation2, crs = 4326)
+lineWgs84.sf <- st_transform(shp, crs = 4326)
+
+# Calculate distances -----------------------------------------------------
+### mais ca fait une ligne avec toutes les pistes.. moi je veux trouver le segment de piste le plus proche..
+dist <- geosphere::dist2Line(p = st_coordinates(pointsWgs84.sf), 
+                             line = st_coordinates(lineWgs84.sf)[,1:2])
+
+class(st_coordinates(lineWgs84.sf)[,1:2])
+st_coordinates(pointsWgs84.sf)
+
+
+
+
+#https://stackoverflow.com/questions/41234566/using-map-in-nested-data-frame
+# this runs
+ # lines <- st_coordinates(lineWgs84.sf %>% slice(1:10)) %>%  as.tibble() %>% group_by(L2)  %>%nest()
+ #  z <- lines %>% mutate(dist = map(data, ~geosphere::dist2Line(p = st_coordinates(pointsWgs84.sf), 
+ #                               line = as.matrix(.x  %>% select(X,Y))) ))
+
+#this runs too  
+#geosphere::dist2Line(p = st_coordinates(pointsWgs84.sf), 
+#line = as.matrix(lines %>% slice(1:1) %>% unnest() %>% select(X,Y)))
+
+
+# i wish this ran too
+z <- lines %>% mutate(dummy= TRUE) %>% left_join(st_coordinates(pointsWgs84.sf) %>% as_tibble() %>% mutate(dummy=TRUE)) 
+
+z %>% mutate(dist = map2(data, cbind(X,Y),~ geosphere::dist2Line(p = .y,
+                                         line = as.matrix(data %>% select(X,Y)))))
+
+
+z <-  map( lines, ~geosphere::dist2Line(p = st_coordinates(pointsWgs84.sf), 
+                             line = as.matrix(.x %>% unnest() %>% select(X,Y))) )
 
 ```
 
