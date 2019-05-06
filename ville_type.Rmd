@@ -14,6 +14,11 @@ output:
 ---
 
 ```{r setup, message=FALSE, warning=FALSE, error= FALSE}
+
+
+#devtools::install_github("ropensci/opencage")
+library(opencage)
+library(osmdata)
 knitr::opts_chunk$set(message=FALSE, warning=FALSE, error= FALSE)
 #rm(list = ls())
 library(tidyverse)
@@ -440,11 +445,13 @@ velo  <-velo %>% filter(!is.na(location))
 
 #https://stackoverflow.com/questions/36175529/getting-over-query-limit-after-one-request-with-geocode
 
+villes <-  velo %>% distinct(ville)
+
 # geocode using google maps api
 if(geocode){
   geo <-ggmap::geocode(location = velo %>% pull(location), output = "latlon", source= "google")
   
-  villes <-  velo %>% distinct(ville)
+  
   geo_villes <- ggmap::geocode(location = villes %>% pull(ville), output = "latlon", source= "google")
   save(velo, geo, villes, geo_villes, file= paste0("geo_",ville,"_",type,".rdata"))
   
@@ -475,6 +482,103 @@ drop_too_far_from_ville <- velo %>% filter(   (lat-ville_lat)^2 + (lon- ville_lo
 velo <- velo %>% filter(!is.na(lat) & !is.na(lon) & !(lat==ville_lat & lon == ville_lon) & !(   (lat-ville_lat)^2 + (lon- ville_lon)^2 > 1)    )
 
 ```
+
+
+```{r geocode_opencage_osmdata}
+
+
+# z <- opencage_forward("Taniata et autoroute 20, Lévis,Quebec", countrycode = "CA")
+
+
+bbox <- map(.x =villes$ville, function(.ville){
+  box <- osmdata::getbb(.ville)
+  c(box[1,1], box[2,1], box[1,2], box[2,2])}
+)
+
+z <- opencage_forward("487 rue des Trappistines, Lévis,Quebec", 
+                      bounds = bbox[[1]],  # within the city
+                      limit = 1 , # just the best result
+                      language= "fr",
+                      min_confidence = 8, # max 1 km uncertainty
+                      countrycode = "CA" # canada
+)
+# bounds = c(-0.563160, 51.280430, 0.278970, 51.683979) (min long, min lat, max long, max lat).
+
+output <- matrix(ncol=4, nrow=nrow(villes))
+for(i in 1:nrow(villes)){
+  message("Getting ville ",villes$ville[i])
+  Sys.sleep(1)
+  box <- osmdata::getbb(villes$ville[i])
+  box2 <- c(box[1,1], box[2,1], box[1,2], box[2,2])
+  output[i,] <- box2
+}
+output <- data.frame(output)
+names(output) <- c("min_x", "min_y", "max_x", "max_y")
+output$ville <- villes$ville
+
+velo <- velo %>% left_join(output)
+
+output_velo <- maxtrix(ncol)
+
+villes2 <- villes %>% mutate(
+  bbox = map(ville, ~{
+    Sys.sleep(1)
+    box <- osmdata::getbb(villes$ville[i])
+    #box2 <- c(box[1,1], box[2,1], box[1,2], box[2,2])
+  }) 
+) %>% 
+  mutate(min_x = map_dbl(bbox, ~ .x[1,1]))  %>%
+  mutate(max_x = map_dbl(bbox, ~ .x[1,2]))  %>%
+  mutate(min_y = map_dbl(bbox, ~ .x[2,1]))  %>%
+  mutate(max_y = map_dbl(bbox, ~ .x[2,2])) %>% 
+  select(-bbox)
+
+zzz2 <- velo %>% left_join(villes2) %>% 
+  mutate(geo = pmap(list(location, min_x, min_y, max_x, max_y),
+                    function(.location, .min_x, .min_y, .max_x, .max_y){
+                      Sys.sleep(1)
+                      
+                      opencage_forward(.location, 
+                                       bounds = c(.min_x, .min_y, .max_x, .max_y),  # within the city
+                                       limit = 1 , # just the best result
+                                       #language= "fr",
+                                       min_confidence = 8, # max 1 km uncertainty
+                                       countrycode = "CA" # canada
+                      )
+                    }
+                    
+                    
+                    
+  ))
+zzzz <- zzz %>% mutate(geo2 = map(geo, ~{ .x$results}))
+```
+
+```{r}
+# trouver les non-mappés
+wh <- zzzz$geo2 %>% map_lgl(is.null) %>% which
+```
+
+```{r}
+a <-  opencage_forward("895 LAGUEUX Lévis, QC, Canada", 
+                                       bounds = c(villes2$min_x, villes2$min_y, villes2$max_x, villes2$max_y),  # within the city
+                                       limit = 1 , # just the best result
+                                       language= "fr",
+                                       min_confidence = 8, # max 1 km uncertainty
+                                       countrycode = "CA" # canada
+                      )
+
+a<-  opencage_forward("57 SAINT OMER Lévis, QC, Canada",
+                                       bounds = c(villes2$min_x, villes2$min_y, villes2$max_x, villes2$max_y),  # within the city
+                                       limit = 1 , # just the best result
+                                       language= "fr",
+                                       min_confidence = 8, # max 1 km uncertainty
+                                       countrycode = "CA" # canada
+                      )
+
+
+
+```
+
 
 Pour effectuer le géocodage, j'utilise l'API de google maps via le package `ggmap`.  La version gratuite de l'API est limitée à 50 requêtes par minute et 2 500 requêtes gratuites par jour.
 
@@ -930,7 +1034,7 @@ Le programme n'a pas essayé de géocoder les accidents suivants:
 
 ```{r geocode_notry}
 datatable(data = drop_no_word_location,
-
+          
           rownames = F,
           options = list(dom = 'tp', ordering = F, pageLength=10) ,
           caption = "Accidents que le programme n'a pas essayé de géocoder")
@@ -940,7 +1044,7 @@ Google n'a pas réussi à géocoder les accidents suivants:
 
 ```{r geocode_fail}
 datatable(data = drop_no_latlon_location,
-
+          
           rownames = F,
           options = list(dom = 'tp', ordering = F, pageLength=10) ,
           caption = "Accidents que google n'a pas réussi à géocoder")
@@ -950,7 +1054,7 @@ Google a codé  ces accidents au centre de la ville:
 
 ```{r}
 datatable(data =drop_same_latlon_as_ville ,
-
+          
           rownames = F,
           options = list(dom = 'tp', ordering = F, pageLength=10) ,
           caption = "Accidents codés au centre de la ville par google")
@@ -961,7 +1065,7 @@ google c codé ces addidents  très loin du centre de la ville:
 
 ```{r}
 datatable(data =drop_too_far_from_ville ,
-
+          
           rownames = F,
           options = list(dom = 'tp', ordering = F, pageLength=10) ,
           caption = "Accidents codés à l'extérieur de la ville par google.")
