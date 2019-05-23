@@ -651,6 +651,7 @@ distincts_locs_final <-
             )
 
 write_rds(distincts_locs_final,"distincts_locs_final.rds")
+write_csv(distincts_locs_final %>% select( location, ville, ville_w_regadm, final_lat, final_lon),"distincts_locs_final.csv")
 
 
 
@@ -668,20 +669,15 @@ write_csv(prepared3 %>%
                     -inside_box_opencage, -inside_box_google, - valide_opencage, - valide_google, -count_valide), "prepared3.csv")
 
 write_rds(prepared3 %>%
-            select( -AN, -region_num, -row_num , -not_equal_ville_opencage, -not_equal_ville_google,
-                    -ACCDN_PRES_DEmod, -RUE_ACCDNmod, -ville, -ville_w_regadm, -HR_ACCDN,
-                    -opencage_return, -opencage_lat, -opencage_lon,
-                    -google_return, -google_lat, -google_lon,
-                    -min_x, -min_y, -max_x, -max_y, 
-                    -ville_lon, -ville_lat,
-                    -inside_box_opencage, -inside_box_google, - valide_opencage, - valide_google, -count_valide), 
+            select(DT_ACCDN, HR_ACCDN, gravite, type, NAME_MUNCP, clean_REG_ADM, 
+                   NO_CIVIQ_ACCDN, SFX_NO_CIVIQ_ACCDN, RUE_ACCDN, ACCDN_PRES_DE, NO_ROUTE , location, final_lat, final_lon), 
           "prepared3_for_shiny.rds")
 # liste des top intersections
 top10 <- prepared3 %>%
   filter(!is.na(final_lat)) %>%
   group_by(final_lat, final_lon)  %>%
   mutate( rapports = n(), ) %>%
-  select(location,ville , clean_REG_ADM, rapports , final_lat, final_lon) %>%
+  select(location,NAME_MUNCP , clean_REG_ADM, rapports , final_lat, final_lon) %>%
   group_by(final_lat, final_lon,location)%>%
   mutate(location_count = n()) %>%
   group_by(final_lat, final_lon) %>%
@@ -694,11 +690,15 @@ top10 <- prepared3 %>%
   rename(location_name = location)
 
 
+top10 %>% filter(!is.na(final_lon)) %>% sf::st_as_sf(x = ., coords = c("final_lon", "final_lat"), crs = 4326, agr = "constant") %>%
+  head(100) %>% mapview::mapview(zcol = "rapports")
+
+
 # liste des accidents aux top intersections
-prepared3 %>% select(-clean_REG_ADM) %>%
-  inner_join(top10 %>% select(final_lat, final_lon, rapports, clean_REG_ADM,  location_name) %>% 
+prepared3 %>% select(-clean_REG_ADM, -NAME_MUNCP) %>%
+  inner_join(top10 %>% select(final_lat, final_lon, rapports, NAME_MUNCP, clean_REG_ADM,  location_name) %>% 
                rename(region_administrative = clean_REG_ADM)) %>% 
-  group_by(location_name, region_administrative,  final_lat, final_lon, rapports, type) %>%
+  group_by(location_name, NAME_MUNCP, region_administrative,  final_lat, final_lon, rapports, type) %>%
   summarise(decompte = n()) %>%
   
   spread(key=type, value= decompte, fill = 0) %>%
