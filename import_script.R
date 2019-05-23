@@ -68,6 +68,11 @@ prep_csv_data <- function(.data, .ville, .type){
   
   
   accidents <- accidents %>% 
+    mutate(type = case_when(
+      nb_bicyclette > 0 & NB_VICTIMES_PIETON >0 ~ "vélos_et_piétons",
+      nb_bicyclette > 0 ~ "vélo",
+      NB_VICTIMES_PIETON > 0 ~ "piéton",
+      TRUE ~ "ni_piéton_ni_vélo")) %>%
     left_join(code_to_mun %>% select(CD_MUNCP, NAME_MUNCP), by= "CD_MUNCP") %>%
     mutate(year = year(DT_ACCDN),  #normalement j'utiliserais  isoyear, mais je ne veux pas voir de 2010..
            week = isoweek(DT_ACCDN),
@@ -270,33 +275,33 @@ mutate_location <- function(.data){
             str_c(str_replace_na(as.numeric(NO_CIVIQ_ACCDN), ""),
                   " ",
                   str_replace_na(RUE_ACCDNmod, "")," ",
-                  str_replace_na(NAME_MUNCP,""), ",", str_replace_na(clean_REG_ADM,""),", QC, Canada"),
+                  ville),
           TP_REPRR_ACCDN==1 & !is.na(RUE_ACCDNmod) & !is.na(ACCDN_PRES_DEmod) ~ 
             str_c(str_replace_na(RUE_ACCDNmod, ""),
                   " and ",
                   str_replace_na(ACCDN_PRES_DEmod, "")," ",
-                  str_replace_na(NAME_MUNCP,""), ",", str_replace_na(clean_REG_ADM,""),", QC, Canada"),
+                  ville),
           TP_REPRR_ACCDN==1 & (!is.na(RUE_ACCDNmod) | !is.na(ACCDN_PRES_DEmod)) ~ 
             str_c(str_replace_na(RUE_ACCDNmod, ""),
                   str_replace_na(ACCDN_PRES_DEmod, "")," ",
-                  str_replace_na(NAME_MUNCP,""), ",", str_replace_na(clean_REG_ADM,""),", QC, Canada"),
+                  ville),
           !is.na(RUE_ACCDNmod) & !is.na(ACCDN_PRES_DEmod) ~ 
             str_c(str_replace_na(RUE_ACCDNmod, ""),
                   " and ",
                   str_replace_na(ACCDN_PRES_DEmod, "")," ",
-                  str_replace_na(NAME_MUNCP,""), ",", str_replace_na(clean_REG_ADM,""),", QC, Canada"),
+                  ville),
           str_detect(toupper(RUE_ACCDNmod), " ET ") ~
             str_c(RUE_ACCDNmod,
                   " ",
-                  str_replace_na(NAME_MUNCP,""), ",", str_replace_na(clean_REG_ADM,""),", QC, Canada"),
+                  ville),
           str_detect(toupper(ACCDN_PRES_DEmod), " ET ") ~ # intersection de 2 routes
             str_c(ACCDN_PRES_DEmod,
                   " ",
-                  str_replace_na(NAME_MUNCP,""), ",", str_replace_na(clean_REG_ADM,""),", QC, Canada"),
+                  ville),
           str_detect(str_sub(ACCDN_PRES_DEmod,1,2), "\\d") ~  # un chiffre dans les 2 premiers caractères de accdn_pres_de ressemble a une adresse..
             str_c(ACCDN_PRES_DEmod,
                   " ",
-                  str_replace_na(NAME_MUNCP,""), ",", str_replace_na(clean_REG_ADM,""),", QC, Canada")
+                  ville),
           
         ),
       
@@ -312,26 +317,26 @@ mutate_location <- function(.data){
   return(accidents)
 }
 
-get_villes_bounding_boxes <- function(.villes, old_rds = NULL){ # all_binding_boxes.rds
+get_villes_w_regadm_bounding_boxes <- function(.villes_w_regadm, old_rds = NULL){ # all_binding_boxes.rds
   
   if (!is.null(old_rds)){
     old_boxes <- read_rds(old_rds)
-    .villes <- .villes %>% anti_join(old_boxes)
+    .villes_w_regadm <- .villes_w_regadm %>% anti_join(old_boxes)
   }
-  
-  output <- matrix(ncol=4, nrow=nrow(.villes))
-  for(i in 1:nrow(.villes)){
-    message("Getting ville ",.villes$ville[i])
+  message("nrows unmatched = ",nrow(.villes_w_regadm))
+  output <- matrix(ncol=4, nrow=nrow(.villes_w_regadm))
+  for(i in 1:nrow(.villes_w_regadm)){
+    message("Getting ville ",.villes_w_regadm$ville_w_regadm[i])
     Sys.sleep(1)
-    box <- osmdata::getbb(.villes$ville[i])
+    box <- osmdata::getbb(.villes_w_regadm$ville_w_regadm[i])
     box2 <- c(box[1,1], box[2,1], box[1,2], box[2,2])
     output[i,] <- box2
   }
   
   output <- data.frame(output)
   names(output) <- c("min_x", "min_y", "max_x", "max_y")
-  output$ville <- .villes$ville
-  output <- output %>% select(ville, everything())
+  output$ville_w_regadm <- .villes_w_regadm$ville_w_regadm
+  output <- output %>% select(ville_w_regadm, everything())
   
   if (!is.null(old_rds)){
     output <- bind_rows(old_boxes, output)
@@ -347,7 +352,7 @@ get_ville_google_centers <- function(.villes, old_rds = NULL){ #"all_villes_cent
     old_centers <- read_rds(old_rds)
     .villes <- .villes %>% anti_join(old_centers)
   }
-  
+  message("nrows unmatched = ",nrow(.villes))
   centers <- ggmap::geocode(location = .villes  %>% pull(ville), output = "latlon", source= "google")
   
   output <- .villes %>% add_column(ville_lon = centers$lon) %>% add_column(ville_lat = centers$lat)
@@ -361,49 +366,62 @@ get_ville_google_centers <- function(.villes, old_rds = NULL){ #"all_villes_cent
 
 add_opencage <- function(.data) {
   .data %>% 
-    mutate(opencage_return = pmap(list(location, min_x, min_y, max_x, max_y),
-                                  
-                                  function(.location, .min_x, .min_y, .max_x, .max_y){
-                                    if(!is.na(location)){
-                                      Sys.sleep(1)
-                                      
-                                      opencage_forward(.location, 
-                                                       bounds = c(.min_x, .min_y, .max_x, .max_y),  # within the city
-                                                       limit = 1 , # just the best result
-                                                       #language= "fr",
-                                                       min_confidence = 8, # max 1 km uncertainty
-                                                       countrycode = "CA" # canada
-                                      )
-                                    } else{list(results= NULL)}
-                                    
-                                  }
-    ),
-    
-    opencage_lat = map_dbl(opencage_return, ~{ if (!is.null(.x$results)){.x$results$geometry.lat} else{NA}}),
-    opencage_lon = map_dbl(opencage_return, ~{ if (!is.null(.x$results)){.x$results$geometry.lng} else{NA}})
-    
-    
-    )
+    mutate(
+      row_num = row_number(),
+      row_count = n(),
+      opencage_return = pmap(list(location, min_x, min_y, max_x, max_y, row_num, row_count),
+                             
+                             function(.location, .min_x, .min_y, .max_x, .max_y, row_num, row_count){
+                               if(!is.na(location)){
+                                 Sys.sleep(1)
+                                 message(.location, ", ",row_num, " / ", row_count)
+                                 
+                                 if(!is.na(.min_x)){
+                                   opencage_forward(.location, 
+                                                    bounds = c(.min_x, .min_y, .max_x, .max_y),  # within the city
+                                                    limit = 1 , # just the best result
+                                                    #language= "fr",
+                                                    min_confidence = 10, # max 250 m uncertainty
+                                                    countrycode = "CA" # canada
+                                   )} else{
+                                     opencage_forward(.location, 
+                                                      limit = 1 , # just the best result
+                                                      #language= "fr",
+                                                      min_confidence = 10, # max 250 m uncertainty
+                                                      countrycode = "CA" # canada
+                                                      
+                                     )}
+                               } else{list(results= NULL)}
+                               
+                             }
+      ),
+      
+      opencage_lat = map_dbl(opencage_return, ~{ if (!is.null(.x$results)){.x$results$geometry.lat} else{NA}}),
+      opencage_lon = map_dbl(opencage_return, ~{ if (!is.null(.x$results)){.x$results$geometry.lng} else{NA}})
+      
+      
+    ) %>%
+    select(-row_num, -row_count)
 }
 
 add_google <- function(.data,.check_opencage = TRUE) {
   
   if (.check_opencage){
-  .data %>% 
-    mutate(
-      google_return = pmap(list(location, opencage_lat), function(.location, .opencage_lat){
-        if(!is.na(.location) & (is.na(.opencage_lat))){ # has a location string but hasnt been geocoded by opencage 
-          ggmap::geocode(location =  .location, output = "latlon", source= "google")
-          
-        }  else {
-          NA
+    .data %>% 
+      mutate(
+        google_return = pmap(list(location, opencage_lat), function(.location, .opencage_lat){
+          if(!is.na(.location) & (is.na(.opencage_lat))){ # has a location string but hasnt been geocoded by opencage 
+            ggmap::geocode(location =  .location, output = "latlon", source= "google")
+            
+          }  else {
+            NA
+          }
         }
-      }
-      ),
-      google_lat = map_dbl(google_return, ~ if(!is.na(.x)){.x$lat} else { NA}),
-      google_lon = map_dbl(google_return, ~ if(!is.na(.x)){.x$lon} else { NA}),
-      
-    )
+        ),
+        google_lat = map_dbl(google_return, ~ if(!is.na(.x)){.x$lat} else { NA}),
+        google_lon = map_dbl(google_return, ~ if(!is.na(.x)){.x$lon} else { NA}),
+        
+      )
     
   } else {
     .data %>% 
@@ -526,7 +544,8 @@ accidents12 <- read_csv("./data/rapports-accident-2012.csv")%>%
   mutate(NO_ROUTE = as.numeric(NO_ROUTE), SFX_NO_CIVIQ_ACCDN= as.character(SFX_NO_CIVIQ_ACCDN))
 accidents11 <- read_csv("./data/rapports-accident-2011.csv")%>%
   mutate(NO_ROUTE = as.numeric(NO_ROUTE), SFX_NO_CIVIQ_ACCDN= as.character(SFX_NO_CIVIQ_ACCDN)) %>%
-  rename(HR_ACCDN = heure_accdn) 
+  rename(HR_ACCDN = heure_accdn) %>% 
+  rename(AN = an)
 
 # wrangle data, keeping only crashes involving bikes in Québec city
 # 910 obs
@@ -541,18 +560,21 @@ accidents <- bind_rows(accidents11,accidents12, accidents13,
 
 prepared <- prep_csv_data(.data= accidents, .ville = ville, .type = type) %>%
   mutate_location
-
 # ok on reset les bounding boxes et villes google
 
-read_rds("all_binding_boxes.rds")%>% filter(2==1)  %>% write_rds("new_bounding_boxes.rds")
-read_rds("all_villes_centers.rds")%>% filter(2==1)  %>% write_rds("new_villes_centers.rds")
+#read_rds("all_binding_boxes.rds")%>% filter(2==1)  %>% write_rds("new_bounding_boxes.rds")
+#read_rds("all_villes_centers.rds")%>% filter(2==1)  %>% write_rds("new_villes_centers.rds")
 
-get_villes_bounding_boxes(prepared %>% distinct(ville), old_rds = "new_bounding_boxes.rds")
+get_villes_w_regadm_bounding_boxes(prepared %>% distinct(ville_w_regadm), old_rds = "new_bounding_boxes.rds")
 get_ville_google_centers(prepared %>% distinct(ville), old_rds = "new_villes_centers.rds")
 
+
+### ok ça ce mont mes nouvelles données d'accidents, non géocodées ----
 prepared2 <- prepared %>% 
   left_join (read_rds("new_bounding_boxes.rds") )  %>%
   left_join(read_rds("new_villes_centers.rds"))
+
+### ok là je vais regarder ec que j'ai déjà géocodé en 2011-2016 (google seulement) et 2017 (opencage + google) et voir ce qui est récupérable
 
 all_location_gps <- bind_rows(
   read_rds("data_final_2011_2017piétons.rds"),
@@ -560,131 +582,240 @@ all_location_gps <- bind_rows(
   select(-min_x, -min_y, -max_x, -max_y, -ville_lat, -ville_lon, ville)%>%
   mutate(
     clean_REG_ADM = str_replace(REG_ADM,"\\(\\d+\\)", ""),
-    ville = paste0(str_replace_na(NAME_MUNCP,""), ",", str_replace_na(clean_REG_ADM,""), ", QC, Canada")) %>%
+    ville = paste0(str_replace_na(NAME_MUNCP,""),  ", QC, Canada"),
+    ville_w_regadm = paste0(str_replace_na(NAME_MUNCP,""), ",", str_replace_na(clean_REG_ADM,""), ", QC, Canada")) %>%
   left_join (read_rds("new_bounding_boxes.rds") )  %>%
   left_join(read_rds("new_villes_centers.rds")) %>%
   check_valid() %>%
   mutate_location()
 
-# ok pour chaque location je vais sauver une seule paire de final_lon
+# ok pour chaque location je vais sauver une seule paire de final_lon /final_lat
 #distincts_locs_bak <- distincts_locs
-# distincts_locs <- all_location_gps %>% 
-#   distinct(location, ville , opencage_return, opencage_lat,               
-#            opencage_lon, google_return,google_lat, google_lon,min_x,min_y,max_x,max_y,
-#            ville_lon,ville_lat,inside_box_opencage,inside_box_google,
-#            not_equal_ville_opencage,not_equal_ville_google,valide_opencage,
-#            valide_google, count_valide , final_lat,final_lon                  ) %>%
+distincts_locs <- all_location_gps %>%
+  distinct(location, ville , ville_w_regadm, opencage_return, opencage_lat,
+           opencage_lon, google_return,google_lat, google_lon,min_x,min_y,max_x,max_y,
+           ville_lon,ville_lat,inside_box_opencage,inside_box_google,
+           not_equal_ville_opencage,not_equal_ville_google,valide_opencage,
+           valide_google, count_valide , final_lat,final_lon                  ) %>%
+  group_by(location) %>%
+  arrange(-valide_google, -valide_opencage ) %>%
+  slice(1) %>%
+  ungroup() %>%
+  filter(!is.na(location))
+
+write_rds(distincts_locs, "distincts_locs.rds")
+
+# ok toute les locations qui ont jamais été geocodées par google is.na(google_lat) ont droit à une deuxième chance.  
+need_google_locs <- distincts_locs %>% 
+  filter(is.na(google_lat)) %>% 
+  select(location, ville, ville_w_regadm, min_x,min_y,max_x,max_y, ville_lon,ville_lat) %>%
+  add_google(., .check_opencage = FALSE)
+
+# les deux left join sont nécessaire carj 'avais oublié de faireun keep sur min_x et ville_lat..
+need_google_locs2 <- need_google_locs %>%
+  #left_join (read_rds("new_bounding_boxes.rds") )  %>%
+  #left_join(read_rds("new_villes_centers.rds")) %>%
+  check_valid()
+
+write_rds(need_google_locs2, "need_google_locs2.rds")
+
+# on greffe les google géocodées aux anciennes distincts locs
+distincts_locs_regoogled <- 
+  bind_rows(distincts_locs %>% anti_join(need_google_locs2 %>% filter(!is.na(final_lat)) %>% select(location, ville, ville_w_regadm)) ,
+            need_google_locs2 %>% filter(!is.na(final_lat))
+  )
+
+write_rds(distincts_locs_regoogled, "distincts_locs_regoogled.rds")
+
+# si j'ai pas de google valide (donc le google a rien retourné ou bien que le google a retourné out of bound, alors on tente enfin avec opencage)
+# opencage est un dernier recours car il a tendance a mettre les adresse ensemble sur une grande distance
+last_ditch_attempt_opencage_locs <-
+  distincts_locs_regoogled %>% 
+  filter(valide_google == 0)%>%
+  select(location, ville, ville_w_regadm, min_y, min_x, max_y, max_x,  google_lat, google_lon)  
+
+last_ditch_attempt_opencage_locs2 <- last_ditch_attempt_opencage_locs %>%  
+  add_opencage()
+write_rds(last_ditch_attempt_opencage_locs2, "last_ditch_attempt_opencage_locs2.rds")
+
+last_ditch_attempt_opencage_locs3 <- last_ditch_attempt_opencage_locs2 %>% 
+  left_join(read_rds("new_villes_centers.rds")) %>%
+  check_valid()
+
+distincts_locs_final <-
+  bind_rows(distincts_locs_regoogled %>% 
+              anti_join(last_ditch_attempt_opencage_locs3 %>% 
+                          filter(!is.na(opencage_lat)) %>% 
+                          select(location, ville, ville_w_regadm )),
+            last_ditch_attempt_opencage_locs3 %>% filter(!is.na(opencage_lat))
+            )
+
+write_rds(distincts_locs_final,"distincts_locs_final.rds")
+
+
+
+prepared3 <- prepared2 %>%  select(-min_x, -min_y, -max_x, -max_y, -ville_lon, -ville_lat) %>%
+  left_join(distincts_locs_final)
+
+write_rds(prepared3, "prepared3.rds")
+write_csv(prepared3 %>%
+            select( -AN, -region_num, -row_num , -not_equal_ville_opencage, -not_equal_ville_google,
+                    -ACCDN_PRES_DEmod, -RUE_ACCDNmod, -ville, -ville_w_regadm, -HR_ACCDN,
+              -opencage_return, -opencage_lat, -opencage_lon,
+                    -google_return, -google_lat, -google_lon,
+                    -min_x, -min_y, -max_x, -max_y, 
+                    -ville_lon, -ville_lat,
+                    -inside_box_opencage, -inside_box_google, - valide_opencage, - valide_google, -count_valide), "prepared3.csv")
+
+write_rds(prepared3 %>%
+            select( -AN, -region_num, -row_num , -not_equal_ville_opencage, -not_equal_ville_google,
+                    -ACCDN_PRES_DEmod, -RUE_ACCDNmod, -ville, -ville_w_regadm, -HR_ACCDN,
+                    -opencage_return, -opencage_lat, -opencage_lon,
+                    -google_return, -google_lat, -google_lon,
+                    -min_x, -min_y, -max_x, -max_y, 
+                    -ville_lon, -ville_lat,
+                    -inside_box_opencage, -inside_box_google, - valide_opencage, - valide_google, -count_valide), 
+          "prepared3_for_shiny.rds")
+# liste des top intersections
+top10 <- prepared3 %>%
+  filter(!is.na(final_lat)) %>%
+  group_by(final_lat, final_lon)  %>%
+  mutate( rapports = n(), ) %>%
+  select(location,ville , clean_REG_ADM, rapports , final_lat, final_lon) %>%
+  group_by(final_lat, final_lon,location)%>%
+  mutate(location_count = n()) %>%
+  group_by(final_lat, final_lon) %>%
+  arrange(-location_count) %>%
+  slice(1) %>%
+  ungroup() %>%
+  arrange(-rapports) %>%
+  select(-location_count) %>%
+  select(location, everything())%>%
+  rename(location_name = location)
+
+
+# liste des accidents aux top intersections
+prepared3 %>% select(-clean_REG_ADM) %>%
+  inner_join(top10 %>% select(final_lat, final_lon, rapports, clean_REG_ADM,  location_name) %>% 
+               rename(region_administrative = clean_REG_ADM)) %>% 
+  group_by(location_name, region_administrative,  final_lat, final_lon, rapports, type) %>%
+  summarise(decompte = n()) %>%
+  
+  spread(key=type, value= decompte, fill = 0) %>%
+  ungroup() %>%
+  arrange(-rapports) %>%
+  filter(region_administrative == "Chaudière-Appalaches")%>% 
+  mutate(rang = row_number())
+
+
+# zombies stuff below --------
+
+# output de mes anciens et nouveaux geocodes ;
+#best_location_data <- read_rds( "best_location_data.rds")
+
+# #all_location_gps2_bak <- all_location_gps2
+# all_location_gps2 <- all_location_gps %>%  # on enleve les variables géocodées et on greffe la meilleure géocodée
+#   select(-opencage_return, -opencage_lat,               
+#          -opencage_lon, -google_return,-google_lat, -google_lon,-min_x,-min_y,-max_x,-max_y,
+#          -ville_lon,-ville_lat,-inside_box_opencage,-inside_box_google,
+#          -not_equal_ville_opencage,-not_equal_ville_google,-valide_opencage,
+#          -valide_google, -count_valide , -final_lat,-final_lon ) %>%
+#   left_join(distincts_locs)
+# #left_join(best_location_data)
+# # 
+# all_location_gps2 %>%
+#   #filter(!is.na(final_lat)) %>%
+#   filter(!is.na(google_lat)) %>%
+#   group_by(final_lat, final_lon)  %>%
+#   mutate( n = n()) %>%
+#   select(location,ville , clean_REG_ADM, n ) %>%
+#   group_by(final_lat, final_lon,location)%>%
+#   mutate(location_count = n()) %>%
+#   group_by(final_lat, final_lon) %>%
+#   arrange(-location_count) %>%
+#   slice(1) %>%
+#   ungroup() %>%
+#   arrange(-n) %>%
+#   select(-location_count) %>%
+#   select(location, everything())%>%
+#   View()
+# # 
+# # 
+# # # 2e chance au geocodage google pour les villes qui ont pas marché (check valide est aussi rendu plus généreux)
+# deuxiemechance_bak <- deuxiemechance
+# deuxiemechance <- all_location_gps2 %>% 
+#   filter(is.na(google_lat)) %>% 
+#   distinct(location,ville) %>% 
+#   filter(!is.na(location)) %>%
+#   left_join (read_rds("new_bounding_boxes.rds") )  %>%
+#   left_join(read_rds("new_villes_centers.rds")) %>%
+#   #add_opencage()  %>%
+#   add_google(.check_opencage= FALSE) #%>%
+# #check_valid()
+# 
+# #write_rds(deuxiemechance , "deuxiemechance.rds")
+# deuxiemechance <- read_rds("deuxiemechance.rds")
+# 
+# distincts_locs_deuxieme <- deuxiemechance %>% check_valid() %>% 
+#   # distinct(location,  
+#   #          #opencage_return, opencage_lat,  opencage_lon, 
+#   #          google_return,google_lat, google_lon,min_x,min_y,max_x,max_y,
+#   #          ville_lon,ville_lat,
+#   #          #inside_box_opencage,
+#   #          inside_box_google,
+#   #          #not_equal_ville_opencage,
+#   #          not_equal_ville_google,valide_opencage,
+#   #          valide_google, count_valide , final_lat,final_lon                  ) %>%
 #   group_by(location) %>%
-#   arrange(-valide_google, -valide_opencage ) %>%
+#   arrange(#-valide_opencage, 
+#     -valide_google ) %>%
 #   slice(1) %>%
 #   ungroup()
-
-best_location_data <- read_rds( "best_location_data.rds")
-
-#all_location_gps2_bak <- all_location_gps2
-all_location_gps2 <- all_location_gps %>%  # on enleve les variables géocodées et on greffe la meilleure géocodée
-  select(-opencage_return, -opencage_lat,               
-         -opencage_lon, -google_return,-google_lat, -google_lon,-min_x,-min_y,-max_x,-max_y,
-         -ville_lon,-ville_lat,-inside_box_opencage,-inside_box_google,
-         -not_equal_ville_opencage,-not_equal_ville_google,-valide_opencage,
-         -valide_google, -count_valide , -final_lat,-final_lon ) %>%
-  #left_join(distincts_locs)
-  left_join(best_location_data)
+# distincts_locs_deuxieme %>% 
+#   filter(!is.na(final_lat)) %>% 
+#   group_by(final_lat, final_lon )%>% 
+#   mutate(n = n()) %>% 
+#   ungroup() %>%
+#   arrange(-n, final_lat) %>% View
+# best_location_data_bak <- best_location_data
+# best_location_data2 <- bind_rows(best_location_data %>% anti_join(deuxiemechance %>% filter(!is.na(google_lat)) %>%select(location)),
+#                                  distincts_locs_deuxieme %>% filter(!is.na(final_lat)))
+# write_rds(best_location_data2, "best_location_data2.rds")
 # 
-all_location_gps2 %>%
-  #filter(!is.na(final_lat)) %>%
-  filter(!is.na(google_lat)) %>%
-  group_by(final_lat, final_lon)  %>%
-  mutate( n = n()) %>%
-  select(location,ville , clean_REG_ADM, n ) %>%
-  group_by(final_lat, final_lon,location)%>%
-  mutate(location_count = n()) %>%
-  group_by(final_lat, final_lon) %>%
-  arrange(-location_count) %>%
-  slice(1) %>%
-  ungroup() %>%
-  arrange(-n) %>%
-  select(-location_count) %>%
-  select(location, everything())%>%
-  View()
+# all_location_gps3 <- all_location_gps %>%  # on enleve les variables géocodées et on greffe la meilleure géocodée
+#   select(-opencage_return, -opencage_lat,               
+#          -opencage_lon, -google_return,-google_lat, -google_lon,-min_x,-min_y,-max_x,-max_y,
+#          -ville_lon,-ville_lat,-inside_box_opencage,-inside_box_google,
+#          -not_equal_ville_opencage,-not_equal_ville_google,-valide_opencage,
+#          -valide_google, -count_valide , -final_lat,-final_lon ) %>%
+#   left_join(best_location_data2)
+# #left_join(best_location_data)
 # 
 # 
-# # 2e chance au geocodage google pour les villes qui ont pas marché (check valide est aussi rendu plus généreux)
-deuxiemechance_bak <- deuxiemechance
-deuxiemechance <- all_location_gps2 %>% 
-  filter(is.na(google_lat)) %>% 
-  distinct(location,ville) %>% 
-  filter(!is.na(location)) %>%
-  left_join (read_rds("new_bounding_boxes.rds") )  %>%
-  left_join(read_rds("new_villes_centers.rds")) %>%
-  #add_opencage()  %>%
-  add_google(.check_opencage= FALSE) #%>%
-  #check_valid()
-
-#write_rds(deuxiemechance , "deuxiemechance.rds")
-
- 
-distincts_locs_deuxieme <- deuxiemechance %>% check_valid() %>% 
-  # distinct(location,  
-  #          #opencage_return, opencage_lat,  opencage_lon, 
-  #          google_return,google_lat, google_lon,min_x,min_y,max_x,max_y,
-  #          ville_lon,ville_lat,
-  #          #inside_box_opencage,
-  #          inside_box_google,
-  #          #not_equal_ville_opencage,
-  #          not_equal_ville_google,valide_opencage,
-  #          valide_google, count_valide , final_lat,final_lon                  ) %>%
-  group_by(location) %>%
-  arrange(#-valide_opencage, 
-    -valide_google ) %>%
-  slice(1) %>%
-  ungroup()
-distincts_locs_deuxieme %>% 
-  filter(!is.na(final_lat)) %>% 
-  group_by(final_lat, final_lon )%>% 
-  mutate(n = n()) %>% 
-  ungroup() %>%
-  arrange(-n, final_lat) %>% View
-best_location_data_bak <- best_location_data
-best_location_data2 <- bind_rows(best_location_data %>% anti_join(deuxiemechance %>% filter(!is.na(google_lat)) %>%select(location)),
-                  distincts_locs_deuxieme %>% filter(!is.na(final_lat)))
-write_rds(best_location_data2, "best_location_data2.rds")
-
-all_location_gps3 <- all_location_gps %>%  # on enleve les variables géocodées et on greffe la meilleure géocodée
-  select(-opencage_return, -opencage_lat,               
-         -opencage_lon, -google_return,-google_lat, -google_lon,-min_x,-min_y,-max_x,-max_y,
-         -ville_lon,-ville_lat,-inside_box_opencage,-inside_box_google,
-         -not_equal_ville_opencage,-not_equal_ville_google,-valide_opencage,
-         -valide_google, -count_valide , -final_lat,-final_lon ) %>%
-left_join(best_location_data2)
-  #left_join(best_location_data)
-
-
-
-all_location_gps3 %>%
-  filter(!is.na(final_lat)) %>%
-  group_by(final_lat, final_lon)  %>%
-  mutate( n = n()) %>%
-  select(location,ville , clean_REG_ADM, n ) %>%
-  group_by(final_lat, final_lon,location)%>%
-  mutate(location_count = n()) %>%
-  group_by(final_lat, final_lon) %>%
-  arrange(-location_count) %>%
-  slice(1) %>%
-  ungroup() %>%
-  arrange(-n) %>%
-  select(-location_count) %>%
-  select(location, everything())%>%
-  View()
-
-all_location_gps3 %>% count(count_valide)
-
-
-all_location_gps3 %>%
-  filter(!is.na(final_lat)) %>%
-  group_by(final_lat, final_lon)  %>%
-  mutate( n = n()) %>%
-  select(location,ville , clean_REG_ADM, n ) %>%
-  ungroup() %>%
-  arrange(-n)  %>% View
-  
+# 
+# all_location_gps3 %>%
+#   filter(!is.na(final_lat)) %>%
+#   group_by(final_lat, final_lon)  %>%
+#   mutate( n = n()) %>%
+#   select(location,ville , clean_REG_ADM, n ) %>%
+#   group_by(final_lat, final_lon,location)%>%
+#   mutate(location_count = n()) %>%
+#   group_by(final_lat, final_lon) %>%
+#   arrange(-location_count) %>%
+#   slice(1) %>%
+#   ungroup() %>%
+#   arrange(-n) %>%
+#   select(-location_count) %>%
+#   select(location, everything())%>%
+#   View()
+# 
+# all_location_gps3 %>% count(count_valide)
+# 
+# 
+# all_location_gps3 %>%
+#   filter(!is.na(final_lat)) %>%
+#   group_by(final_lat, final_lon)  %>%
+#   mutate( n = n()) %>%
+#   select(location,ville , clean_REG_ADM, n ) %>%
+#   ungroup() %>%
+#   arrange(-n)  %>% View
