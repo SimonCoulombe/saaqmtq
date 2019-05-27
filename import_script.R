@@ -324,24 +324,27 @@ get_villes_w_regadm_bounding_boxes <- function(.villes_w_regadm, old_rds = NULL)
     .villes_w_regadm <- .villes_w_regadm %>% anti_join(old_boxes)
   }
   message("nrows unmatched = ",nrow(.villes_w_regadm))
-  output <- matrix(ncol=4, nrow=nrow(.villes_w_regadm))
-  for(i in 1:nrow(.villes_w_regadm)){
-    message("Getting ville ",.villes_w_regadm$ville_w_regadm[i])
-    Sys.sleep(1)
-    box <- osmdata::getbb(.villes_w_regadm$ville_w_regadm[i])
-    box2 <- c(box[1,1], box[2,1], box[1,2], box[2,2])
-    output[i,] <- box2
+  output <- NULL
+  if (nrow(.villes_w_regadm)>0){
+    output <- matrix(ncol=4, nrow=nrow(.villes_w_regadm))
+    for(i in 1:nrow(.villes_w_regadm)){
+      message("Getting ville ",.villes_w_regadm$ville_w_regadm[i])
+      Sys.sleep(1)
+      box <- osmdata::getbb(.villes_w_regadm$ville_w_regadm[i])
+      box2 <- c(box[1,1], box[2,1], box[1,2], box[2,2])
+      output[i,] <- box2
+    }
+    
+    output <- data.frame(output)
+    names(output) <- c("min_x", "min_y", "max_x", "max_y")
+    output$ville_w_regadm <- .villes_w_regadm$ville_w_regadm
+    output <- output %>% select(ville_w_regadm, everything())
+    
+    if (!is.null(old_rds)){
+      output <- bind_rows(old_boxes, output)
+      write_rds(output, old_rds)
+    }  
   }
-  
-  output <- data.frame(output)
-  names(output) <- c("min_x", "min_y", "max_x", "max_y")
-  output$ville_w_regadm <- .villes_w_regadm$ville_w_regadm
-  output <- output %>% select(ville_w_regadm, everything())
-  
-  if (!is.null(old_rds)){
-    output <- bind_rows(old_boxes, output)
-    write_rds(output, old_rds)
-  }  
   return(output)
 }
 
@@ -353,14 +356,16 @@ get_ville_google_centers <- function(.villes, old_rds = NULL){ #"all_villes_cent
     .villes <- .villes %>% anti_join(old_centers)
   }
   message("nrows unmatched = ",nrow(.villes))
-  centers <- ggmap::geocode(location = .villes  %>% pull(ville), output = "latlon", source= "google")
-  
-  output <- .villes %>% add_column(ville_lon = centers$lon) %>% add_column(ville_lat = centers$lat)
-  
-  if (!is.null(old_rds)){
-    output <- bind_rows(old_centers, output)
-    write_rds(output, old_rds)
-  }  
+  output <- NULL
+  if (nrow(.villes) > 0){
+    centers <- ggmap::geocode(location = .villes  %>% pull(ville), output = "latlon", source= "google")
+    output <- .villes %>% add_column(ville_lon = centers$lon) %>% add_column(ville_lat = centers$lat)
+    
+    if (!is.null(old_rds)){
+      output <- bind_rows(old_centers, output)
+      write_rds(output, old_rds)
+    }  
+  }
   return(output)  
 }
 
@@ -560,11 +565,8 @@ accidents <- bind_rows(accidents11,accidents12, accidents13,
 
 prepared <- prep_csv_data(.data= accidents, .ville = ville, .type = type) %>%
   mutate_location
-# ok on reset les bounding boxes et villes google
 
-#read_rds("all_binding_boxes.rds")%>% filter(2==1)  %>% write_rds("new_bounding_boxes.rds")
-#read_rds("all_villes_centers.rds")%>% filter(2==1)  %>% write_rds("new_villes_centers.rds")
-
+# get bounding boxes for opencage and city centers from google 
 get_villes_w_regadm_bounding_boxes(prepared %>% distinct(ville_w_regadm), old_rds = "new_bounding_boxes.rds")
 get_ville_google_centers(prepared %>% distinct(ville), old_rds = "new_villes_centers.rds")
 
@@ -648,7 +650,7 @@ distincts_locs_final <-
                           filter(!is.na(opencage_lat)) %>% 
                           select(location, ville, ville_w_regadm )),
             last_ditch_attempt_opencage_locs3 %>% filter(!is.na(opencage_lat))
-            )
+  )
 
 write_rds(distincts_locs_final,"distincts_locs_final.rds")
 write_csv(distincts_locs_final %>% select( location, ville, ville_w_regadm, final_lat, final_lon),"distincts_locs_final.csv")
@@ -662,7 +664,7 @@ write_rds(prepared3, "prepared3.rds")
 write_csv(prepared3 %>%
             select( -AN, -region_num, -row_num , -not_equal_ville_opencage, -not_equal_ville_google,
                     -ACCDN_PRES_DEmod, -RUE_ACCDNmod, -ville, -ville_w_regadm, -HR_ACCDN,
-              -opencage_return, -opencage_lat, -opencage_lon,
+                    -opencage_return, -opencage_lat, -opencage_lon,
                     -google_return, -google_lat, -google_lon,
                     -min_x, -min_y, -max_x, -max_y, 
                     -ville_lon, -ville_lat,
@@ -673,6 +675,9 @@ write_rds(prepared3 %>%
                    NO_CIVIQ_ACCDN, SFX_NO_CIVIQ_ACCDN, RUE_ACCDN, ACCDN_PRES_DE, NO_ROUTE , location, final_lat, final_lon), 
           "prepared3_for_shiny.rds")
 # liste des top intersections
+
+prepared3 <- read_rds( "prepared3.rds")
+
 top10 <- prepared3 %>%
   filter(!is.na(final_lat)) %>%
   group_by(final_lat, final_lon)  %>%
@@ -690,17 +695,16 @@ top10 <- prepared3 %>%
   rename(location_name = location)
 
 
-top10 %>% filter(!is.na(final_lon)) %>% sf::st_as_sf(x = ., coords = c("final_lon", "final_lat"), crs = 4326, agr = "constant") %>%
+top10 %>% filter(rapports >= 7) %>%  filter(!is.na(final_lon)) %>% sf::st_as_sf(x = ., coords = c("final_lon", "final_lat"), crs = 4326, agr = "constant") %>%
   head(100) %>% mapview::mapview(zcol = "rapports")
 
 
 # liste des accidents aux top intersections
 prepared3 %>% select(-clean_REG_ADM, -NAME_MUNCP) %>%
   inner_join(top10 %>% select(final_lat, final_lon, rapports, NAME_MUNCP, clean_REG_ADM,  location_name) %>% 
-               rename(region_administrative = clean_REG_ADM)) %>% 
+               rename(region_administrative = clean_REG_ADM) ) %>% 
   group_by(location_name, NAME_MUNCP, region_administrative,  final_lat, final_lon, rapports, type) %>%
   summarise(decompte = n()) %>%
-  
   spread(key=type, value= decompte, fill = 0) %>%
   ungroup() %>%
   arrange(-rapports) %>%
