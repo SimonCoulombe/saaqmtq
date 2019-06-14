@@ -32,10 +32,6 @@ geocode <- FALSE
 register_google(key = Sys.getenv("googlemap_api_key"),
                 account_type="premium")
 
-register_google(key = Sys.getenv("googlemap_api_key"),
-                account_type="premium")
-
-
 
 if(ville == "province"){
   villetexte <- "province de Québec"
@@ -561,8 +557,6 @@ accidents <- bind_rows(accidents11,accidents12, accidents13,
 
 # work ----
 
-
-
 prepared <- prep_csv_data(.data= accidents, .ville = ville, .type = type) %>%
   mutate_location
 
@@ -678,6 +672,46 @@ write_rds(prepared3 %>%
 
 prepared3 <- read_rds( "prepared3.rds")
 
+### juin 2019, on va essayer de clusterer les points dans des ronds de moins de 150m.
+library(rgdal)
+library(geosphere)
+
+temp <- prepared3 %>%
+  filter(!is.na(final_lat)) %>%
+  mutate(final_lon2 = final_lon, final_lat2 = final_lat)%>%
+  st_as_sf(coords = c("final_lon2", "final_lat2"), crs = 4326, agr = "constant")
+
+
+
+
+
+mtlhead <- temp #%>% filter(ville == "Montréal, QC, Canada" ) %>% head(2000)
+library(tictoc)
+tic()
+distance_matrix <- st_distance( mtlhead)
+toc()
+hc <- hclust(as.dist(distance_matrix), method="complete")
+d=70
+mtlhead$clust <- cutree(hc, h=d)
+mapview::mapview(mtlhead, zcol = "clust")
+
+# get the centroid coords for each cluster
+circles <- matrix(ncol=2, nrow=max(mtlhead$clust))
+for (i in 1:max(mtlhead$clust)){
+  circles[i,1] <- mtlhead %>% filter(clust == i) %>% summarise(final_lat = mean(final_lat)) %>% pull(final_lat)
+  circles[i,2] <- mtlhead %>% filter(clust == i) %>% summarise(final_lon = mean(final_lon)) %>% pull(final_lon)
+    
+}
+circles <- circles %>% as_tibble()
+
+mypalette <- leaflet::colorNumeric(palette = "plasma", domain = c(mtlhead$clust))
+
+
+leaflet(circles) %>% addTiles %>%
+  addCircles(lng = ~V2, lat = ~V1, radius = d)  %>%
+  addCircleMarkers(data=mtlhead, color = ~mypalette(clust), label = ~paste0(clust))
+  
+## fin préparer clustering
 top10 <- prepared3 %>%
   filter(!is.na(final_lat)) %>%
   group_by(final_lat, final_lon)  %>%
@@ -693,8 +727,6 @@ top10 <- prepared3 %>%
   select(-location_count) %>%
   select(location, everything())%>%
   rename(location_name = location)
-
-
 top10 %>% filter(rapports >= 7) %>%  filter(!is.na(final_lon)) %>% sf::st_as_sf(x = ., coords = c("final_lon", "final_lat"), crs = 4326, agr = "constant") %>%
   head(100) %>% mapview::mapview(zcol = "rapports")
 
