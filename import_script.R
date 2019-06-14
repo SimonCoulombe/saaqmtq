@@ -672,54 +672,78 @@ write_rds(prepared3 %>%
 
 prepared3 <- read_rds( "prepared3.rds")
 
-### juin 2019, on va essayer de clusterer les points dans des ronds de moins de 150m.
+###14  juin 2019, on va essayer de clusterer les points dans des ronds de moins de 150m.
 library(rgdal)
 library(geosphere)
 
 temp <- prepared3 %>%
   filter(!is.na(final_lat)) %>%
-  mutate(final_lon2 = final_lon, final_lat2 = final_lat)%>%
-  st_as_sf(coords = c("final_lon2", "final_lat2"), crs = 4326, agr = "constant")
+  mutate(final_lat2 = if_else(near(final_lat,45.550883) & near(final_lon,-73.629461), as.double(45.5502703), as.double(final_lat)),
+         final_lon2 = if_else(near(final_lat,45.550883) & near(final_lon, -73.629461), as.double(-73.6293019), as.double(final_lon))) %>%
+  mutate(final_lon = final_lon2, final_lat = final_lat2)%>%
+  st_as_sf(coords = c("final_lon2", "final_lat2"), crs = 4326, agr = "constant") 
+
+prepared3 %>%  filter(near(final_lat,45.550883) & near(final_lon,-73.629461)) %>% dim # 10
+prepared3 %>%  filter(near(final_lat,45.5502703) & near(final_lon,-73.6293019)) %>% dim # 19
+temp %>%  filter(near(final_lat,45.550883) & near(final_lon,-73.629461)) %>% dim # 0 
+temp  %>%  filter(near(final_lat,45.5502703) & near(final_lon,-73.6293019)) %>% dim # 29
 
 
-
-
-
-mtlhead <- temp #%>% filter(ville == "Montréal, QC, Canada" ) %>% head(2000)
 library(tictoc)
 tic()
-distance_matrix <- st_distance( mtlhead)
+distance_matrix <- st_distance( temp)
 toc()
 hc <- hclust(as.dist(distance_matrix), method="complete")
-d=70
-mtlhead$clust <- cutree(hc, h=d)
-mapview::mapview(mtlhead, zcol = "clust")
+
+tic()
+d=50
+temp$clust <- cutree(hc, h=d)
+toc()
+
+prepared3 <-  temp %>% st_set_geometry(NULL) %>%
+  bind_rows(prepared3 %>% filter(is.na(final_lat)))
+
+write_rds(prepared3, "prepared3.rds")
+
+write_csv(prepared3 %>%
+            select( -AN, -region_num, -row_num , -not_equal_ville_opencage, -not_equal_ville_google,
+                    -ACCDN_PRES_DEmod, -RUE_ACCDNmod, -ville, -ville_w_regadm, -HR_ACCDN,
+                    -opencage_return, -opencage_lat, -opencage_lon,
+                    -google_return, -google_lat, -google_lon,
+                    -min_x, -min_y, -max_x, -max_y, 
+                    -ville_lon, -ville_lat,
+                    -inside_box_opencage, -inside_box_google, - valide_opencage, - valide_google, -count_valide), "prepared3.csv")
+
+
+prepared3 <- read_csv("prepared3.csv")
+
+#mapview::mapview(mtlhead %>% filter(ville == "Montréal, QC, Canada" ) %>% head(2000), zcol = "clust")
 
 # get the centroid coords for each cluster
-circles <- matrix(ncol=2, nrow=max(mtlhead$clust))
-for (i in 1:max(mtlhead$clust)){
-  circles[i,1] <- mtlhead %>% filter(clust == i) %>% summarise(final_lat = mean(final_lat)) %>% pull(final_lat)
-  circles[i,2] <- mtlhead %>% filter(clust == i) %>% summarise(final_lon = mean(final_lon)) %>% pull(final_lon)
-    
-}
-circles <- circles %>% as_tibble()
+# circles <- matrix(ncol=2, nrow=max(mtlhead$clust))
+# for (i in 1:max(mtlhead$clust)){
+#   circles[i,1] <- mtlhead %>% filter(clust == i) %>% summarise(final_lat = mean(final_lat)) %>% pull(final_lat)
+#   circles[i,2] <- mtlhead %>% filter(clust == i) %>% summarise(final_lon = mean(final_lon)) %>% pull(final_lon)
+#     
+# }
+# circles <- circles %>% as_tibble()
+# 
+# mypalette <- leaflet::colorNumeric(palette = "plasma", domain = c(mtlhead$clust))
+# 
+# 
+# leaflet(circles) %>% addTiles %>%
+#   addCircles(lng = ~V2, lat = ~V1, radius = d)  %>%
+#   addCircleMarkers(data=mtlhead, color = ~mypalette(clust), label = ~paste0(clust))
+# top 10 clusters
 
-mypalette <- leaflet::colorNumeric(palette = "plasma", domain = c(mtlhead$clust))
-
-
-leaflet(circles) %>% addTiles %>%
-  addCircles(lng = ~V2, lat = ~V1, radius = d)  %>%
-  addCircleMarkers(data=mtlhead, color = ~mypalette(clust), label = ~paste0(clust))
-  
-## fin préparer clustering
-top10 <- prepared3 %>%
-  filter(!is.na(final_lat)) %>%
-  group_by(final_lat, final_lon)  %>%
-  mutate( rapports = n(), ) %>%
-  select(location,NAME_MUNCP , clean_REG_ADM, rapports , final_lat, final_lon) %>%
-  group_by(final_lat, final_lon,location)%>%
+top10 <- prepared3 %>% 
+  filter(!is.na(clust))%>%
+  group_by(clust) %>%
+  mutate(rapports = n()) %>%
+  select(location,NAME_MUNCP , clean_REG_ADM, rapports , final_lat, final_lon, clust) %>%
+  group_by(clust, final_lat, final_lon,location)%>%
   mutate(location_count = n()) %>%
-  group_by(final_lat, final_lon) %>%
+  group_by(clust) %>%
   arrange(-location_count) %>%
   slice(1) %>%
   ungroup() %>%
@@ -727,21 +751,50 @@ top10 <- prepared3 %>%
   select(-location_count) %>%
   select(location, everything())%>%
   rename(location_name = location)
-top10 %>% filter(rapports >= 7) %>%  filter(!is.na(final_lon)) %>% sf::st_as_sf(x = ., coords = c("final_lon", "final_lat"), crs = 4326, agr = "constant") %>%
+
+# ## fin préparer clustering
+# top10 <- prepared3 %>%
+#   filter(!is.na(final_lat)) %>%
+#   group_by(final_lat, final_lon)  %>%
+#   mutate( rapports = n(), ) %>%
+#   select(location,NAME_MUNCP , clean_REG_ADM, rapports , final_lat, final_lon) %>%
+#   group_by(final_lat, final_lon,location)%>%
+#   mutate(location_count = n()) %>%
+#   group_by(final_lat, final_lon) %>%
+#   arrange(-location_count) %>%
+#   slice(1) %>%
+#   ungroup() %>%
+#   arrange(-rapports) %>%
+#   select(-location_count) %>%
+#   select(location, everything())%>%
+#   rename(location_name = location)
+
+top10 %>% 
+  filter(rapports >= 7) %>%  
+  sf::st_as_sf(x = ., coords = c("final_lon", "final_lat"), crs = 4326, agr = "constant") %>%
   head(100) %>% mapview::mapview(zcol = "rapports")
 
-
 # liste des accidents aux top intersections
-prepared3 %>% select(-clean_REG_ADM, -NAME_MUNCP) %>%
-  inner_join(top10 %>% select(final_lat, final_lon, rapports, NAME_MUNCP, clean_REG_ADM,  location_name) %>% 
+prepared3 %>% select(clust, type ) %>%
+  inner_join(top10 %>% 
+               select(clust, final_lat, final_lon, rapports, NAME_MUNCP, clean_REG_ADM,  location_name) %>% 
                rename(region_administrative = clean_REG_ADM) ) %>% 
-  group_by(location_name, NAME_MUNCP, region_administrative,  final_lat, final_lon, rapports, type) %>%
+  group_by(location_name, NAME_MUNCP, region_administrative,  clust, rapports, type) %>%
   summarise(decompte = n()) %>%
   spread(key=type, value= decompte, fill = 0) %>%
   ungroup() %>%
   arrange(-rapports) %>%
-  filter(region_administrative == "Chaudière-Appalaches")%>% 
-  mutate(rang = row_number())
+  #filter(region_administrative == "Chaudière-Appalaches")%>% 
+  mutate(rang = row_number())  %>%
+  select(-clust)
+
+
+prepared3 %>% select(clust, type, DT_ACCDN, HR_ACCDN,JR_SEMN_ACCDN, CD_COND_METEO, gravite,  NB_MORTS, NB_BLESSES_GRAVES , NB_BLESSES_LEGERS, location) %>%
+  inner_join(top10 %>% 
+               select(clust,  rapports))  %>%
+  filter(rapports == max(rapports)) %>%
+  select(-clust, -rapports) %>% View
+  
 
 
 # zombies stuff below --------
