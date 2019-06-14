@@ -654,23 +654,11 @@ write_csv(distincts_locs_final %>% select( location, ville, ville_w_regadm, fina
 prepared3 <- prepared2 %>%  select(-min_x, -min_y, -max_x, -max_y, -ville_lon, -ville_lat) %>%
   left_join(distincts_locs_final)
 
-write_rds(prepared3, "prepared3.rds")
-write_csv(prepared3 %>%
-            select( -AN, -region_num, -row_num , -not_equal_ville_opencage, -not_equal_ville_google,
-                    -ACCDN_PRES_DEmod, -RUE_ACCDNmod, -ville, -ville_w_regadm, -HR_ACCDN,
-                    -opencage_return, -opencage_lat, -opencage_lon,
-                    -google_return, -google_lat, -google_lon,
-                    -min_x, -min_y, -max_x, -max_y, 
-                    -ville_lon, -ville_lat,
-                    -inside_box_opencage, -inside_box_google, - valide_opencage, - valide_google, -count_valide), "prepared3.csv")
+write_rds(prepared3, "prepared3_michemin.rds")
 
-write_rds(prepared3 %>%
-            select(DT_ACCDN, HR_ACCDN, gravite, type, NAME_MUNCP, clean_REG_ADM, 
-                   NO_CIVIQ_ACCDN, SFX_NO_CIVIQ_ACCDN, RUE_ACCDN, ACCDN_PRES_DE, NO_ROUTE , location, final_lat, final_lon), 
-          "prepared3_for_shiny.rds")
 # liste des top intersections
 
-prepared3 <- read_rds( "prepared3.rds")
+prepared3 <- read_rds( "prepared3_michemin.rds")
 
 ###14  juin 2019, on va essayer de clusterer les points dans des ronds de moins de 150m.
 library(rgdal)
@@ -700,13 +688,36 @@ d=50
 temp$clust <- cutree(hc, h=d)
 toc()
 
-prepared3 <-  temp %>% st_set_geometry(NULL) %>%
-  bind_rows(prepared3 %>% filter(is.na(final_lat)))
+# get mode de tout les clusters
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# Mode <- function(x) {
+#   ux <- unique(x)
+#   if(!anyDuplicated(x)){
+#     NA_character_ } else { 
+#       tbl <-   tabulate(match(x, ux))
+#       toString(ux[tbl==max(tbl)])
+#     }
+#}
+
+cluster_coords <- temp %>% st_set_geometry(NULL) %>% group_by(clust) %>%
+  summarise(mode_final_lat = Mode(final_lat),
+            mode_final_lon = Mode(final_lon))
+
+prepared3  <-  temp %>% 
+  st_set_geometry(NULL) %>% 
+  inner_join(cluster_coords) %>% 
+  mutate(final_lat = mode_final_lat, final_lon = mode_final_lon ) %>%
+  select(-mode_final_lat, -mode_final_lon) %>% 
+  bind_rows(prepared3 %>% filter(is.na(final_lat)) ) # greffer les lignes non géocodées
 
 write_rds(prepared3, "prepared3.rds")
 
 write_csv(prepared3 %>%
-            select( -AN, -region_num, -row_num , -not_equal_ville_opencage, -not_equal_ville_google,
+            select( -region_num, -row_num , -not_equal_ville_opencage, -not_equal_ville_google,
                     -ACCDN_PRES_DEmod, -RUE_ACCDNmod, -ville, -ville_w_regadm, -HR_ACCDN,
                     -opencage_return, -opencage_lat, -opencage_lon,
                     -google_return, -google_lat, -google_lon,
@@ -715,8 +726,10 @@ write_csv(prepared3 %>%
                     -inside_box_opencage, -inside_box_google, - valide_opencage, - valide_google, -count_valide), "prepared3.csv")
 
 
-prepared3 <- read_csv("prepared3.csv")
-
+write_rds(prepared3 %>%
+            select(DT_ACCDN, HR_ACCDN, gravite, type, NAME_MUNCP, clean_REG_ADM, 
+                   NO_CIVIQ_ACCDN, SFX_NO_CIVIQ_ACCDN, RUE_ACCDN, ACCDN_PRES_DE, NO_ROUTE , location, final_lat, final_lon, clust), 
+          "prepared3_for_shiny.rds")
 #mapview::mapview(mtlhead %>% filter(ville == "Montréal, QC, Canada" ) %>% head(2000), zcol = "clust")
 
 # get the centroid coords for each cluster
@@ -789,7 +802,7 @@ prepared3 %>% select(clust, type ) %>%
   select(-clust)
 
 
-prepared3 %>% select(clust, type, DT_ACCDN, HR_ACCDN,JR_SEMN_ACCDN, CD_COND_METEO, gravite,  NB_MORTS, NB_BLESSES_GRAVES , NB_BLESSES_LEGERS, location) %>%
+prepared3 %>% select(clust, type, DT_ACCDN, heure,JR_SEMN_ACCDN, CD_COND_METEO, gravite,  NB_MORTS, NB_BLESSES_GRAVES , NB_BLESSES_LEGERS, location) %>%
   inner_join(top10 %>% 
                select(clust,  rapports))  %>%
   filter(rapports == max(rapports)) %>%
